@@ -192,11 +192,13 @@ function findDishByMessage(message) {
   const ignoredWords = new Set([
     "a", "al", "algo", "algun", "alguna", "ayuda", "blanco", "con", "cual",
     "caloria", "calorias", "cuanto", "cuanta", "cuantas", "cuantos", "de",
-    "del", "dime", "el",
-    "en", "es", "favor",
-    "gusta", "gustaria", "la", "las", "lo", "los", "me", "menu", "mi",
-    "kcal", "pesa", "peso", "por", "plato", "puedes", "que", "quisiera", "saber",
-    "tiene", "un", "una"
+    "del", "dime", "el", "en", "es", "favor", "gusta", "gustaria",
+    "la", "las", "lo", "los", "me", "menu", "mi", "kcal", "pesa",
+    "peso", "por", "plato", "puedes", "que", "quisiera", "saber",
+    "tiene", "un", "una", "quiero", "pero", "trae", "soy",
+    "alergica", "alergico", "alergia", "recomiendas", "recomienda",
+    "recomendar", "recomendarme", "recomienden", "para", "este",
+    "esta", "ese", "esa", "porfa", "porfavor", "si"
   ]);
   const queryWords = normalised.split(" ").filter((word) => word && !ignoredWords.has(word));
 
@@ -234,16 +236,7 @@ function findDishByMessage(message) {
     return true;
   };
 
-  if (queryWords.length === 1) {
-    const uniqueMatch = menuItems.filter((dish) =>
-      normalise(dish.name).split(" ").some((word) =>
-        word.length >= 5 && isNearMatch(word, queryWords[0])
-      )
-    );
-    return uniqueMatch.length === 1 ? uniqueMatch[0] : null;
-  }
-
-  if (queryWords.length < 2) return null;
+  if (!queryWords.length) return null;
 
   const matches = menuItems.map((dish) => {
     const nameWords = normalise(dish.name)
@@ -254,11 +247,24 @@ function findDishByMessage(message) {
     );
     const exactWords = matchedWords.filter((word) => queryWords.includes(word));
 
-    return { dish, matchedCount: matchedWords.length, exactCount: exactWords.length };
+    return {
+      dish,
+      matchedCount: matchedWords.length,
+      exactCount: exactWords.length,
+      nameWordCount: nameWords.length
+    };
   })
-    .filter((match) => match.matchedCount >= 2)
+    .filter((match) => match.matchedCount > 0)
+    .map((match) => ({
+      ...match,
+      queryCoverage: match.matchedCount / queryWords.length,
+      nameCoverage: match.matchedCount / match.nameWordCount
+    }))
     .sort((left, right) =>
-      right.matchedCount - left.matchedCount || right.exactCount - left.exactCount
+      right.queryCoverage - left.queryCoverage ||
+      right.nameCoverage - left.nameCoverage ||
+      right.exactCount - left.exactCount ||
+      right.matchedCount - left.matchedCount
     );
 
   if (!matches.length) return null;
@@ -266,8 +272,11 @@ function findDishByMessage(message) {
   const best = matches[0];
   const second = matches[1];
   if (
-    best.matchedCount / queryWords.length < 0.75 ||
+    best.queryCoverage < 0.5 ||
+    best.nameCoverage < 0.3 ||
     (second &&
+      second.queryCoverage === best.queryCoverage &&
+      second.nameCoverage === best.nameCoverage &&
       second.matchedCount === best.matchedCount &&
       second.exactCount === best.exactCount)
   ) {
@@ -300,10 +309,68 @@ function getDishClarification(intent) {
   return `En la carta hay varias opciones relacionadas: ${options.map((dish) => dish.name).join(", ")}. ¿De cuál quieres saber?`;
 }
 
+function getAllergensInMessage(intent, dish = null) {
+  const allergenTerms = [
+    { name: "mostaza", terms: ["mostaza"] },
+    { name: "soya", terms: ["soya", "soja"] },
+    { name: "huevo", terms: ["huevo", "huevos"] },
+    { name: "frutos secos", terms: ["frutos secos", "nueces", "almendras", "maní", "mani"] },
+    { name: "crustáceos", terms: ["crustaceo", "marisco", "camarón", "camaron", "langostino"] },
+    { name: "moluscos", terms: ["molusco", "pulpo", "calamar", "almeja"] },
+    { name: "gluten", terms: ["gluten", "trigo"] },
+    { name: "lácteos", terms: ["lacteo", "lactosa", "leche", "queso", "mantequilla"] },
+    { name: "pescado", terms: ["pescado", "salmón", "salmon", "atún", "atun"] },
+    { name: "ajonjolí", terms: ["ajonjoli", "sesamo"] }
+  ];
+
+  const dishWords = new Set(
+    dish
+      ? normalise(dish.name).split(" ").flatMap((word) => [word, word.replace(/s$/, "")])
+      : []
+  );
+
+  return allergenTerms
+    .filter(({ name, terms }) => {
+      const explicitlyNamed = intent.includes(normalise(name));
+      const mentionedTerm = terms.some((term) => intent.includes(normalise(term)));
+      const termIsPartOfDishName = terms.some((term) =>
+        dishWords.has(normalise(term))
+      );
+      return mentionedTerm && (!termIsPartOfDishName || explicitlyNamed);
+    })
+    .map(({ name }) => name);
+}
+
+function isAllergyAdviceRequest(intent) {
+  return [
+    "alerg", "alergica", "alergico", "intolerancia", "intolerante",
+    "no puedo comer", "me hace mal"
+  ].some((term) => intent.includes(term));
+}
+
+function buildAllergyRecommendation(allergens) {
+  const safeDishes = menuItems.filter((dish) =>
+    dish.allergens &&
+    !dish.allergens.some((allergen) => allergen.startsWith("Se informa")) &&
+    !allergens.some((allergen) => dish.allergens.some((dishAllergen) =>
+      normalise(dishAllergen) === normalise(allergen)
+    ))
+  );
+
+  if (!safeDishes.length) {
+    return `No encuentro platos con información confirmada que descarte ${formatList(allergens)}. Consulta al restaurante antes de pedir.`;
+  }
+
+  return `Según los alérgenos registrados, estas opciones no listan ${formatList(allergens)}: ${safeDishes.map((dish) => dish.name).join(", ")}. Esto no descarta contaminación cruzada: por tu seguridad, confirma la preparación con el restaurante antes de pedir.`;
+}
+
 function buildDishResponse(dish, intent) {
   const asksCalories = ["caloria", "calorias", "kcal"].some((term) => intent.includes(term));
   const asksWeight = ["peso", "pesa", "gramo", "gramos", "cantidad"].some((term) => intent.includes(term));
-  const asksAllergens = ["alerg", "gluten", "lacteo", "lactosa", "crustace", "molusco", "mostaza", "soya", "ajonjoli", "frutos secos"].some((term) => intent.includes(term));
+  const askedAllergens = getAllergensInMessage(intent, dish);
+  const asksAllergens = isAllergyAdviceRequest(intent) || askedAllergens.length > 0;
+  const asksWhetherDishHasAllergen = askedAllergens.length > 0 &&
+    ["tiene", "trae", "contiene", "lleva", "incluye"].some((term) => intent.includes(term));
   const asksIngredients = ["ingrediente", "preparado", "preparacion", "que tiene", "contiene"].some((term) => intent.includes(term));
   const asksCooking = ["coccion", "termino", "cocida", "cocido", "temperatura"].some((term) => intent.includes(term));
   const asksPairing = ["sugerencia", "recomienda", "acompa", "vino", "coctel", "cocktail", "postre", "maridaje", "bebida"].some((term) => intent.includes(term));
@@ -311,7 +378,22 @@ function buildDishResponse(dish, intent) {
 
   if (asksCalories) details.push(`🔥 Calorías de ${dish.name}: ${dish.calories}.`);
   if (asksWeight) details.push(`⚖️ Peso de ${dish.name}: ${dish.weight || "no confirmado en la información disponible"}.`);
-  if (asksAllergens) details.push(`⚠️ Alérgenos de ${dish.name}: ${formatList(dish.allergens)}.`);
+  if (asksWhetherDishHasAllergen) {
+    const confirmedForDish = askedAllergens.filter((allergen) =>
+      dish.allergens.some((dishAllergen) => normalise(dishAllergen) === normalise(allergen))
+    );
+    const absentFromList = askedAllergens.filter((allergen) =>
+      !dish.allergens.some((dishAllergen) => normalise(dishAllergen) === normalise(allergen))
+    );
+    if (confirmedForDish.length) {
+      details.push(`Sí. ${formatList(confirmedForDish)} aparece entre los alérgenos registrados para ${dish.name}.`);
+    }
+    if (absentFromList.length) {
+      details.push(`${formatList(absentFromList)} no aparece en la lista registrada de ${dish.name}, pero esto no garantiza que esté libre de trazas o contaminación cruzada.`);
+    }
+  } else if (asksAllergens) {
+    details.push(`⚠️ Alérgenos de ${dish.name}: ${formatList(dish.allergens)}. Confirma con el restaurante si tienes una alergia, especialmente por posible contaminación cruzada.`);
+  }
   if (asksIngredients) {
     details.push(
       dish.description
@@ -592,14 +674,25 @@ function handleInput(message) {
     "coccion", "temperatura", "maridaje", "vino", "coctel", "postre",
     "plato", "informacion", "info"
   ].some((term) => intent.includes(term));
-  const clarification = mentionedDish ? null : getDishClarification(intent);
+  const mentionedAllergens = getAllergensInMessage(intent);
+  const allergyAdviceRequested = isAllergyAdviceRequest(intent);
+  const clarification = mentionedDish || allergyAdviceRequested
+    ? null
+    : getDishClarification(intent);
 
   if (clarification) return clarification;
 
   const refersToSelectedDish = hasExplicitDishSelection &&
     asksDishData &&
+    !allergyAdviceRequested &&
     !["pescado", "salmon", "atun", "bacalao", "pez", "marisco", "camaron", "langostino", "pulpo", "calamar", "almeja", "picanha", "carne", "res", "rib eye", "new york"].some((term) => intent.includes(term));
   const dish = mentionedDish || (refersToSelectedDish ? selectedDish : null);
+
+  if (allergyAdviceRequested) {
+    if (dish) return buildDishResponse(dish, intent);
+    if (mentionedAllergens.length) return buildAllergyRecommendation(mentionedAllergens);
+    return "¿A qué ingrediente o alérgeno tienes alergia? Así puedo revisar la lista registrada de los platos. Confirma siempre la preparación con el restaurante por posible contaminación cruzada.";
+  }
 
   if (intent.includes("pedido") || intent.includes("ordenar") || intent.includes("confirmo") || intent.includes("lo pido") || intent.includes("quiero este") || intent.includes("quiero pedir") || intent.includes("confirmar pedido")) {
     const orderDish = mentionedDish || (refersToSelectedDish ? selectedDish : null);
