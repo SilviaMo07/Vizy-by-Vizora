@@ -28,26 +28,6 @@ const menuSections = [
   }
 ];
 
-const cookingProfiles = {
-  "Picanha": { cooking: "3/4, jugosa y bien cocida", temperature: "66°C, lista para disfrutar" },
-  "New york": { cooking: "3/4, jugosa y bien cocida", temperature: "66°C, lista para disfrutar" },
-  "Rib Eye": { cooking: "3/4, jugosa y bien cocida", temperature: "66°C, lista para disfrutar" },
-  "Langostinos San Miguel": { cooking: "bien cocido, suave y sabroso", temperature: "64°C, caliente" },
-  "Langostinos en mantequilla de hierbas": { cooking: "bien cocido, suave y sabroso", temperature: "64°C, caliente" },
-  "Langostinos thermidor": { cooking: "bien cocido, con salsa cremosa", temperature: "62°C, tibio" },
-  "Langostinos Molinito": { cooking: "bien cocido, suave y sabroso", temperature: "64°C, caliente" },
-  "Pulpo a la parrilla": { cooking: "bien cocido y tierno", temperature: "65°C, servido tibio" },
-  "Salmón a las finas hierbas": { cooking: "3/4, ligeramente jugoso", temperature: "60°C, suave y sabroso" },
-  "Pescado blanco a la plancha": { cooking: "bien cocido y seco", temperature: "63°C, disponible al momento" },
-  "Pescado blanco al malecón": { cooking: "bien cocido y sabroso", temperature: "63°C, servido caliente" },
-  "Pescado blanco vatel": { cooking: "bien cocido, con termino dorado", temperature: "64°C, caliente" },
-  "Pescado blanco marinera": { cooking: "bien cocido y sabroso", temperature: "63°C, caliente" },
-  "Pescado blanco lacedo en aceite aromatizado": { cooking: "bien cocido y dorado", temperature: "63°C, caliente" },
-  "Salmón encostrado en semillas de ajonjolí blanco y negro": { cooking: "3/4, jugoso y dorado", temperature: "60°C, suave" },
-  "Fiesta de mariscos": { cooking: "bien cocido, con punto de calor medio", temperature: "64°C, servido caliente" },
-  "Cazuela marina": { cooking: "bien cocida, con sabores integrados", temperature: "68°C, caliente y cremosa" }
-};
-
 const confirmedWeights = {
   "Picanha": "350 g de carne; acompañamiento: 390 g",
   "New york": "350 g de carne; acompañamiento: 390 g",
@@ -110,24 +90,18 @@ const confirmedCalories = {
 
 const menuItems = menuSections.flatMap((section) =>
   section.items.map((item, index) => {
-    const profile = cookingProfiles[item.name] || { cooking: "Punto de cocción estándar del restaurante", temperature: "Servicio habitual del restaurante" };
-
     return {
       ...item,
       id: `${section.title.toLowerCase().replace(/\s+/g, "-")}-${index}`,
       category: section.title,
       calories: confirmedCalories[item.name] || "No disponible",
       weight: confirmedWeights[item.name] || null,
-      temperature: profile.temperature,
-      cooking: profile.cooking,
-      ingredients: item.description ? [item.description] : ["Ingredientes seleccionados del plato"],
+      temperature: null,
+      cooking: null,
+      ingredients: [],
       allergens: confirmedAllergens[item.name] || ["Se informa según disponibilidad del restaurante"],
       note: "Descripción según carta del restaurante.",
-      pairing: {
-        wine: "vino de la casa",
-        cocktail: "cóctel de la carta",
-        dessert: "postre sugerido"
-      }
+      pairing: null
     };
   })
 );
@@ -193,7 +167,7 @@ function renderMenu() {
           hasExplicitDishSelection = true;
           renderMenu();
           addMessage(
-            `<strong>${dish.name}</strong> está seleccionado. Puedo ayudarte con su información técnica, alergias, temperatura y sugerencias de maridaje en segundos.`,
+            `<strong>${dish.name}</strong> está seleccionado. Puedes preguntarme por sus calorías, peso o alérgenos confirmados.`,
             "bot"
           );
         }
@@ -306,15 +280,17 @@ function findDishByMessage(message) {
 function getDishClarification(intent) {
   const fishTerms = ["pescado", "salmon", "atun", "bacalao", "pez"];
   const seafoodTerms = ["marisco", "camaron", "langostino", "pulpo", "calamar", "almeja"];
+  const meatTerms = ["picanha", "carne", "res", "rib eye", "new york"];
   const fishMatches = fishTerms.filter((term) => intent.includes(term));
   const seafoodMatches = seafoodTerms.filter((term) => intent.includes(term));
-  const terms = [...fishMatches, ...seafoodMatches];
+  const meatMatches = meatTerms.filter((term) => intent.includes(term));
+  const terms = [...fishMatches, ...seafoodMatches, ...meatMatches];
 
   if (!terms.length) return null;
 
   const options = menuItems.filter((dish) => {
     const searchable = normalise(
-      `${dish.name} ${fishMatches.length && !seafoodMatches.length ? "" : dish.category}`
+      `${dish.name} ${dish.description} ${meatMatches.length ? dish.category : ""}`
     );
     return terms.some((term) => searchable.includes(term));
   });
@@ -324,58 +300,41 @@ function getDishClarification(intent) {
   return `En la carta hay varias opciones relacionadas: ${options.map((dish) => dish.name).join(", ")}. ¿De cuál quieres saber?`;
 }
 
-function buildDishResponse(dish) {
-  const allergenText = dish.allergens && dish.allergens.length
-    ? `⚠️ Alérgenos: ${formatList(dish.allergens)}.`
-    : "⚠️ Alérgenos: ese detalle exacto no está listado en la base, pero te puedo guiar con confianza por los ingredientes principales y alternativas disponibles.";
+function buildDishResponse(dish, intent) {
+  const asksCalories = ["caloria", "calorias", "kcal"].some((term) => intent.includes(term));
+  const asksWeight = ["peso", "pesa", "gramo", "gramos", "cantidad"].some((term) => intent.includes(term));
+  const asksAllergens = ["alerg", "gluten", "lacteo", "lactosa", "crustace", "molusco", "mostaza", "soya", "ajonjoli", "frutos secos"].some((term) => intent.includes(term));
+  const asksIngredients = ["ingrediente", "preparado", "preparacion", "que tiene", "contiene"].some((term) => intent.includes(term));
+  const asksCooking = ["coccion", "termino", "cocida", "cocido", "temperatura"].some((term) => intent.includes(term));
+  const asksPairing = ["sugerencia", "recomienda", "acompa", "vino", "coctel", "cocktail", "postre", "maridaje", "bebida"].some((term) => intent.includes(term));
+  const details = [];
 
-  const weightText = dish.weight
-    ? `⚖️ Peso: ${dish.weight}.`
-    : "⚖️ Peso: ese detalle exacto no está registrado, aunque el plato se sirve con una porción cuidada y equilibrada.";
+  if (asksCalories) details.push(`🔥 Calorías de ${dish.name}: ${dish.calories}.`);
+  if (asksWeight) details.push(`⚖️ Peso de ${dish.name}: ${dish.weight || "no confirmado en la información disponible"}.`);
+  if (asksAllergens) details.push(`⚠️ Alérgenos de ${dish.name}: ${formatList(dish.allergens)}.`);
+  if (asksIngredients) {
+    details.push(
+      dish.description
+        ? `🌿 Descripción de la carta para ${dish.name}: ${dish.description} La lista completa de ingredientes no está disponible.`
+        : `🌿 Ingredientes de ${dish.name}: no confirmados en la información disponible.`
+    );
+  }
+  if (asksCooking) details.push(`🔥 El punto de cocción y la temperatura de ${dish.name} no están confirmados en la información disponible.`);
+  if (asksPairing) details.push(`No tengo recomendaciones de maridaje confirmadas para ${dish.name}.`);
 
-  const tempText = dish.temperature
-    ? `🌡️ Temperatura de servicio: ${dish.temperature}.`
-    : "🌡️ Temperatura de servicio: se entrega en la presentación habitual del restaurante.";
+  if (!details.length) {
+    details.push(
+      `Para ${dish.name}: calorías: ${dish.calories}; peso: ${dish.weight || "no confirmado"}; alérgenos: ${formatList(dish.allergens)}.`
+    );
+    if (dish.description) details.push(`Descripción de la carta: ${dish.description}`);
+    details.push("La lista completa de ingredientes, el punto de cocción y la temperatura no están confirmados.");
+  }
 
-  const cookingText = dish.cooking
-    ? `🔥 Cocción: ${dish.cooking}.`
-    : "🔥 Cocción: es una preparación estándar del restaurante.";
-
-  const ingredientText = `🌿 Ingredientes clave: ${formatList(dish.ingredients)}.`;
-
-  return `
-    <strong>¡Claro! ${dish.name} es una excelente elección.</strong><br>
-    🔥 Calorías: ${dish.calories}.<br>
-    ${weightText}<br>
-    ${tempText}<br>
-    ${cookingText}<br>
-    ${ingredientText}<br>
-    ${allergenText}<br>
-    ${dish.note}<br>
-    <span style="color:#6a4f3a;">Si quieres, te ayudo a elegir una buena combinación para disfrutarlo aún más.</span>
-  `;
+  return details.join("<br>");
 }
 
 function getPairingResponse(dish, intent) {
-  const pairing = dish.pairing || {};
-
-  const wine = pairing.wine || "un vino blanco fresco";
-  const cocktail = pairing.cocktail || "un cóctel cítrico ligero";
-  const dessert = pairing.dessert || "un postre delicado";
-
-  if (intent.includes("vino") || intent.includes("bebida") || intent.includes("maridar")) {
-    return `Para acompañar ${dish.name}, te recomendaría ${wine}. Tiene un equilibrio muy bonito con la intensidad del plato y hace que todo se disfrute mejor.`;
-  }
-
-  if (intent.includes("cocktail") || intent.includes("coctel")) {
-    return `Si buscas algo más fresco, ${cocktail} encaja muy bien con ${dish.name}. Aporta ligereza y ayuda a equilibrar el sabor.`;
-  }
-
-  if (intent.includes("postre") || intent.includes("dessert")) {
-    return `Para cerrar la experiencia, ${dessert} es una gran opción. Tiene ese toque final que acompaña sin opacar el plato principal.`;
-  }
-
-  return `Para ${dish.name}, mi recomendación más completa sería empezar con ${wine}, seguir con ${cocktail} y cerrar con ${dessert}. La combinación queda muy bien por equilibrio y textura.`;
+  return `No tengo recomendaciones de maridaje confirmadas para ${dish.name}.`;
 }
 
 function getDislikedTerms(intent) {
@@ -425,31 +384,6 @@ function formatDislikedTerms(disliked) {
   if (disliked.length === 1) return disliked[0];
   if (disliked.length === 2) return `${disliked[0]} ni ${disliked[1]}`;
   return `${disliked.slice(0, -1).join(", ")} ni ${disliked[disliked.length - 1]}`;
-}
-
-function getSafeRecommendation(intent) {
-  const disliked = getDislikedTerms(intent);
-  if (!disliked.length) return null;
-
-  const safeCandidates = menuItems.filter((dish) => {
-    const searchable = `${dish.name} ${dish.description} ${dish.category}`.toLowerCase();
-    return !disliked.some((term) => {
-      const patterns = {
-        mariscos: ["marisco", "mariscos", "camaron", "camarones", "langostino", "langostinos", "calamar", "pulpo", "almeja", "marina"],
-        pescado: ["pescado", "pez", "salmon", "salmón", "atun", "atún"],
-        carne: ["carne", "res", "bife", "lomo", "pollo", "cerdo", "churrasco"],
-        lactosa: ["lactosa", "lacteo", "lácteo", "leche", "queso", "crema", "mantequilla"],
-        gluten: ["gluten", "trigo", "harina", "pan", "pasta"],
-        picante: ["picante", "aji", "ají", "pimienta", "pimenton", "pimentón"],
-        vegetal: ["verdura", "vegetales", "espinaca", "brocoli", "brócoli"],
-        dulce: ["dulce", "azucar", "azúcar"]
-      };
-
-      return (patterns[term] || []).some((pattern) => searchable.includes(pattern));
-    });
-  });
-
-  return safeCandidates.length ? safeCandidates[0] : null;
 }
 
 function startGame(mode) {
@@ -651,11 +585,24 @@ async function sendOrderToChef(dish) {
 function handleInput(message) {
   const intent = normalise(message);
   const mentionedDish = findDishByMessage(message);
-  const dish = mentionedDish || (hasExplicitDishSelection ? selectedDish : null);
   const disliked = getDislikedTerms(intent);
+  const asksDishData = [
+    "caloria", "calorias", "kcal", "peso", "pesa", "gramo", "gramos",
+    "alerg", "gluten", "lacteo", "ingrediente", "preparado", "preparacion",
+    "coccion", "temperatura", "maridaje", "vino", "coctel", "postre",
+    "plato", "informacion", "info"
+  ].some((term) => intent.includes(term));
+  const clarification = mentionedDish ? null : getDishClarification(intent);
+
+  if (clarification) return clarification;
+
+  const refersToSelectedDish = hasExplicitDishSelection &&
+    asksDishData &&
+    !["pescado", "salmon", "atun", "bacalao", "pez", "marisco", "camaron", "langostino", "pulpo", "calamar", "almeja", "picanha", "carne", "res", "rib eye", "new york"].some((term) => intent.includes(term));
+  const dish = mentionedDish || (refersToSelectedDish ? selectedDish : null);
 
   if (intent.includes("pedido") || intent.includes("ordenar") || intent.includes("confirmo") || intent.includes("lo pido") || intent.includes("quiero este") || intent.includes("quiero pedir") || intent.includes("confirmar pedido")) {
-    const orderDish = mentionedDish || (hasExplicitDishSelection ? selectedDish : null);
+    const orderDish = mentionedDish || (refersToSelectedDish ? selectedDish : null);
     if (!orderDish) {
       return "¿Qué plato deseas pedir? Dime su nombre o selecciónalo en el menú.";
     }
@@ -664,11 +611,7 @@ function handleInput(message) {
   }
 
   if (disliked.length) {
-    const safeDish = getSafeRecommendation(intent);
-    if (safeDish) {
-      const dislikedText = formatDislikedTerms(disliked);
-      return `Entiendo. Si no te gusta ${dislikedText}, te recomiendo ${safeDish.name}. Es una opción que no incluye ese detalle y además tiene un equilibrio muy agradable de sabor. ${safeDish.description || "Te va a encantar."}`;
-    }
+    return `Entiendo que prefieres evitar ${formatDislikedTerms(disliked)}. No puedo confirmar una recomendación libre de ese ingrediente porque la información completa de ingredientes no está disponible. Consulta al restaurante antes de pedir.`;
   }
 
 
@@ -715,11 +658,6 @@ function handleInput(message) {
     "temperatura"
   ].some((term) => intent.includes(term));
 
-  if (!dish) {
-    const clarification = getDishClarification(intent);
-    if (clarification) return clarification;
-  }
-
   if (hasPairingRequest) {
     if (!dish) {
       return "¿Qué plato quieres acompañar? Dime el nombre o selecciónalo en el menú y te recomiendo una combinación.";
@@ -727,8 +665,12 @@ function handleInput(message) {
     return getPairingResponse(dish, intent);
   }
 
-  if (dish && (mentionedDish || hasExplicitDishSelection || intent.includes("plato") || intent.includes("calorias") || intent.includes("peso") || intent.includes("temperatura") || isAllergyRequest || isCookingQuestion)) {
-    return buildDishResponse(dish);
+  if (dish && (mentionedDish || refersToSelectedDish || intent.includes("plato") || asksDishData || isAllergyRequest || isCookingQuestion)) {
+    return buildDishResponse(dish, intent);
+  }
+
+  if (!dish && asksDishData) {
+    return "¿De qué plato necesitas la información? Dime su nombre para responderte solo con datos de ese plato.";
   }
 
   if (intent.includes("menu") || intent.includes("ver platos") || intent.includes("recomendacion")) {
